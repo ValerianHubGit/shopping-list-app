@@ -52,7 +52,16 @@ def search_product(name: str, db: Session = Depends(get_db)):
 
 @app.post("/products")
 def create_product(product: ProductCreate, db: Session = Depends(get_db)):
-    """Legt ein neues Produkt an – subcategory_id zunächst leer, AI folgt später"""
+    """Gibt vorhandenes Produkt zurück oder legt neues an"""
+    # Zuerst prüfen ob Produkt bereits existiert
+    vorhandenes_produkt = db.query(Product).filter(
+        Product.name.ilike(product.name)
+    ).first()
+    
+    if vorhandenes_produkt:
+        return vorhandenes_produkt
+    
+    # Neu anlegen wenn nicht vorhanden
     db_product = Product(name=product.name, ai_verified=False)
     db.add(db_product)
     db.commit()
