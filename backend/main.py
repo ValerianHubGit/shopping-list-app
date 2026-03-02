@@ -4,6 +4,7 @@ from database import get_db
 from models import Category, Subcategory, Product, ShoppingList, ShoppingListItem #import models? insb. wenn get_db in models steht
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+from typing import Optional
 
 app = FastAPI()
 
@@ -25,6 +26,15 @@ class ShoppingListCreate(BaseModel):
 
 class ShoppingListItemCreate(BaseModel):
     product_id: int
+
+class ProductResponse(BaseModel):
+    id: int
+    name: str
+    subcategory_name: Optional[str] = None
+    category_name: Optional[str] = None
+
+    class Config:
+        from_attributes = True    
 
 # ─── Kategorien ───────────────────────────────────────────────────────────────
 
@@ -50,7 +60,7 @@ def search_product(name: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Produkt nicht gefunden")
     return product
 
-@app.post("/products")
+@app.post("/products", response_model=ProductResponse)
 def create_product(product: ProductCreate, db: Session = Depends(get_db)):
     """Gibt vorhandenes Produkt zurück oder legt neues an"""
     # Zuerst prüfen ob Produkt bereits existiert
@@ -58,15 +68,34 @@ def create_product(product: ProductCreate, db: Session = Depends(get_db)):
         Product.name.ilike(product.name)
     ).first()
     
-    if vorhandenes_produkt:
-        return vorhandenes_produkt
-    
-    # Neu anlegen wenn nicht vorhanden
-    db_product = Product(name=product.name, ai_verified=False)
-    db.add(db_product)
-    db.commit()
-    db.refresh(db_product)
-    return db_product
+    if not vorhandenes_produkt:
+        vorhandenes_produkt = Product(name=product.name, ai_verified=False)
+        db.add(vorhandenes_produkt)
+        db.commit()
+        db.refresh(vorhandenes_produkt)
+
+    # Kategorie und Unterkategorie nachladen
+    subcategory_name = None
+    category_name = None
+
+    if vorhandenes_produkt.subcategory_id:
+        subcategory = db.query(Subcategory).filter(
+            Subcategory.id == vorhandenes_produkt.subcategory_id
+        ).first()
+        if subcategory:
+            subcategory_name = subcategory.name
+            category = db.query(Category).filter(
+                Category.id == subcategory.category_id
+            ).first()
+            if category:
+                category_name = category.name
+
+    return ProductResponse(
+        id=vorhandenes_produkt.id,
+        name=vorhandenes_produkt.name,
+        subcategory_name=subcategory_name,
+        category_name=category_name
+    )
 
 # ─── Einkaufslisten ───────────────────────────────────────────────────────────
 
