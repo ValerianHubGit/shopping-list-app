@@ -3,4 +3,5 @@
 .env
 __pycache__/
 *.pyc
+test_connection.py
 '''
