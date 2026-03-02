@@ -3,8 +3,16 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import Category, Subcategory, Product, ShoppingList, ShoppingListItem #import models? insb. wenn get_db in models steht
 from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:8081"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 #wir definieren, was bei verschiedenen API Aufrufen geschieht
 # ─── Pydantic Schemas ─────────────────────────────────────────────────────────
 # Pydantic definiert wie Daten aussehen wenn sie rein- und rauskommen
