@@ -1,7 +1,19 @@
-'''
+# Virtuelle Umgebung
+venv/
+.venv/
+env/
 
+# Umgebungsvariablen (niemals ins Repo!)
 .env
+
+# Python-Cache
 __pycache__/
 *.pyc
+*.pyo
+
+# Datenbank-Dateien (falls lokal SQLite genutzt)
+*.db
+*.sqlite3
+
+# Testdateien
 test_connection.py
-'''
