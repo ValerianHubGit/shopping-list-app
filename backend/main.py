@@ -5,6 +5,7 @@ from models import Category, Subcategory, Product, ShoppingList, ShoppingListIte
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
+from ai_service import kategorisiere_produkt
 
 app = FastAPI()
 
@@ -62,19 +63,44 @@ def search_product(name: str, db: Session = Depends(get_db)):
 
 @app.post("/products", response_model=ProductResponse)
 def create_product(product: ProductCreate, db: Session = Depends(get_db)):
-    """Gibt vorhandenes Produkt zurück oder legt neues an"""
-    # Zuerst prüfen ob Produkt bereits existiert
+    """Gibt vorhandenes Produkt zurück oder legt neues mit AI-Kategorisierung an"""
+    
+    # Schritt 1: Prüfen ob Produkt bereits existiert
     vorhandenes_produkt = db.query(Product).filter(
         Product.name.ilike(product.name)
     ).first()
-    
+
     if not vorhandenes_produkt:
-        vorhandenes_produkt = Product(name=product.name, ai_verified=False)
+        # Schritt 2: AI fragen
+        try:
+            ki_ergebnis = kategorisiere_produkt(product.name)
+            kategorie_name = ki_ergebnis.get("kategorie")
+            unterkategorie_name = ki_ergebnis.get("unterkategorie")
+        except Exception as e:
+            print(f"AI-Fehler: {e}")
+            kategorie_name = None
+            unterkategorie_name = None
+
+        # Schritt 3: Unterkategorie in DB suchen
+        subcategory_id = None
+        if unterkategorie_name:
+            subcategory = db.query(Subcategory).filter(
+                Subcategory.name.ilike(unterkategorie_name)
+            ).first()
+            if subcategory:
+                subcategory_id = subcategory.id
+
+        # Schritt 4: Neues Produkt anlegen
+        vorhandenes_produkt = Product(
+            name=product.name,
+            subcategory_id=subcategory_id,
+            ai_verified=True
+        )
         db.add(vorhandenes_produkt)
         db.commit()
         db.refresh(vorhandenes_produkt)
 
-    # Kategorie und Unterkategorie nachladen
+    # Schritt 5: Kategorie und Unterkategorie nachladen für Response
     subcategory_name = None
     category_name = None
 
