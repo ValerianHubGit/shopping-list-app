@@ -26,20 +26,32 @@ export default function ShoppingList() {
     }
   };
 
-  // Baut aus dem flachen Array eine verschachtelte Struktur mit den vorkommenden Kategorien und Unterkategorien
-  const gruppierteListe = () => {
+  // Definierte Reihenfolge der Kategorien
+const KATEGORIEREIHENFOLGE = ["Ungekühltes", "Gekühltes", "Tiefgekühltes"];
+
+const gruppierteListe = () => {
     const gruppen = {};
     liste.forEach(item => {
-      const kat = item.kategorie || "Unkategorisiert";
-      const subkat = item.unterkategorie || "Sonstiges";
+      const kat = item.kategorie || "Sonstiges";
+      const subkat = item.unterkategorie || null;
       if (!gruppen[kat]) gruppen[kat] = {};
-      if (!gruppen[kat][subkat]) gruppen[kat][subkat] = [];
-      gruppen[kat][subkat].push(item.name);
+      if (subkat) {
+        if (!gruppen[kat][subkat]) gruppen[kat][subkat] = [];
+        gruppen[kat][subkat].push(item.name);
+      } else {
+        if (!gruppen[kat]["__ohne__"]) gruppen[kat]["__ohne__"] = [];
+        gruppen[kat]["__ohne__"].push(item.name);
+      }
     });
     return gruppen;
   };
+  // Kategorien in definierter Reihenfolge, Sonstiges immer zuletzt
+const gruppen = gruppierteListe();
+const sortiertKategorien = [
+  ...KATEGORIEREIHENFOLGE.filter(k => gruppen[k]),
+  ...Object.keys(gruppen).filter(k => !KATEGORIEREIHENFOLGE.includes(k))
+];
 
-  const gruppen = gruppierteListe();
 
   return (
     <View style={styles.container}>
@@ -54,23 +66,23 @@ export default function ShoppingList() {
 
       {/* Kategorisierte Liste */}
       <ScrollView style={styles.liste}>
-        {Object.keys(gruppen).map(kategorie => (
-          <View key={kategorie}>
-            <Text style={styles.kategorieHeader}>{kategorie}</Text>
-
-            {Object.keys(gruppen[kategorie]).map(unterkategorie => (
-              <View key={unterkategorie}>
-                <Text style={styles.unterkategorieHeader}>{unterkategorie}</Text>
-
-                {gruppen[kategorie][unterkategorie].map(produktName => (
-                  <Text key={produktName} style={styles.produkt}>• {produktName}</Text>
-                ))}
-
-              </View>
+            {sortiertKategorien.map(kategorie => (
+            <View key={kategorie}>
+                <Text style={styles.kategorieHeader}>{kategorie}</Text>
+                {Object.keys(gruppen[kategorie]).map(unterkategorie => (
+                <View key={unterkategorie}>
+                    {/* Unterkategorie nur anzeigen wenn vorhanden */}
+                    {unterkategorie !== "__ohne__" && (
+                    <Text style={styles.unterkategorieHeader}>{unterkategorie}</Text>
+                    )}
+                    {gruppen[kategorie][unterkategorie].map(produktName => (
+                    <Text key={produktName} style={styles.produkt}>• {produktName}</Text>
+                    ))}
+                </View>
             ))}
-          </View>
+            </View>
         ))}
-      </ScrollView>
+        </ScrollView>
     </View>
   );
 }
