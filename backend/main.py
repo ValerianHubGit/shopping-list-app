@@ -36,7 +36,14 @@ class ProductResponse(BaseModel):
 
     class Config:
         from_attributes = True    
+class ShoppingListItemResponse(BaseModel):
+    id: int
+    shopping_list_id: int
+    product_id: int
+    is_in_cart: bool
 
+    class Config:
+        from_attributes = True
 # ─── Kategorien ───────────────────────────────────────────────────────────────
 
 @app.get("/categories")
@@ -142,7 +149,7 @@ def get_list(list_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Liste nicht gefunden")
     return db_list
 
-@app.post("/lists/{list_id}/items")
+@app.post("/lists/{list_id}/items", response_model=ShoppingListItemResponse)
 def add_item_to_list(
     list_id: int,
     item: ShoppingListItemCreate,
