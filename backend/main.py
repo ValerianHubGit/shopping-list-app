@@ -1,11 +1,15 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, status
+from ai_service import korrigiere_und_kategorisiere
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from database import get_db
-from models import Category, Subcategory, Product, ShoppingList, ShoppingListItem
+from models import Category, Subcategory, Product, ShoppingList, ShoppingListItem, User
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
-from ai_service import korrigiere_und_kategorisiere
+from datetime import datetime, timedelta
+from jose import JWTError, jwt
+import os
 
 app = FastAPI()
 
@@ -16,7 +20,57 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ─── Auth-Konfiguration ───────────────────────────────────────────────────────
+SECRET_KEY   = os.getenv("JWT_SECRET", "bitte-in-.env-setzen-sehr-geheim")
+ALGORITHM    = "HS256"
+TOKEN_EXPIRE = timedelta(days=30)
+
+http_bearer = HTTPBearer()
+
+
+def passwort_hash(pw: str) -> str:
+    import bcrypt
+    return bcrypt.hashpw(pw.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+def passwort_verifizieren(pw: str, hashed: str) -> bool:
+    import bcrypt
+    return bcrypt.checkpw(pw.encode('utf-8'), hashed.encode('utf-8'))
+
+def token_erstellen(user_id: int, username: str) -> str:
+    payload = {
+        "sub": str(user_id),
+        "username": username,
+        "exp": datetime.utcnow() + TOKEN_EXPIRE,
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+def token_dekodieren(token: str) -> dict:
+    try:
+        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Ungültiges Token")
+
+def aktueller_nutzer(
+    credentials: HTTPAuthorizationCredentials = Depends(http_bearer),
+    db: Session = Depends(get_db),
+) -> User:
+    payload = token_dekodieren(credentials.credentials)
+    user = db.query(User).filter(User.id == int(payload["sub"])).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Nutzer nicht gefunden")
+    return user
+
+
 # ─── Pydantic Schemas ─────────────────────────────────────────────────────────
+
+class RegisterSchema(BaseModel):
+    username: str
+    email: str
+    password: str
+
+class LoginSchema(BaseModel):
+    username: str
+    password: str
 
 class ProductCreate(BaseModel):
     name: str
@@ -24,37 +78,62 @@ class ProductCreate(BaseModel):
 class ShoppingListCreate(BaseModel):
     name: str
 
+class ShoppingListRename(BaseModel):
+    name: str
+
 class ShoppingListItemCreate(BaseModel):
     product_id: int
 
-class ItemSubcategoryUpdate(BaseModel):
+class SubcategoryUpdate(BaseModel):
     subcategory_id: int
 
 class ProductResponse(BaseModel):
     id: int
     name: str
     subcategory_name: Optional[str] = None
-    category_name: Optional[str] = None
-    is_new: bool = False
+    category_name:    Optional[str] = None
+    is_new:           bool = False
 
     class Config:
         from_attributes = True
 
-class ShoppingListItemResponse(BaseModel):
-    id: int
-    shopping_list_id: int
-    product_id: int
-    is_in_cart: bool
 
-    class Config:
-        from_attributes = True
+# ─── Auth-Endpunkte ───────────────────────────────────────────────────────────
 
-# ─── Kategorien (mit Unterkategorien) ───────────────────────────────────────────────────────────────
+@app.post("/auth/register", status_code=201)
+def register(data: RegisterSchema, db: Session = Depends(get_db)):
+    if db.query(User).filter(User.username == data.username).first():
+        raise HTTPException(400, "Benutzername bereits vergeben")
+    if db.query(User).filter(User.email == data.email).first():
+        raise HTTPException(400, "E-Mail bereits registriert")
+    user = User(
+        username=data.username,
+        email=data.email,
+        password_hash=passwort_hash(data.password),
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    token = token_erstellen(user.id, user.username)
+    return {"token": token, "user_id": user.id, "username": user.username}
+
+
+@app.post("/auth/login")
+def login(data: LoginSchema, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.username == data.username).first()
+    if not user or not passwort_verifizieren(data.password, user.password_hash):
+        raise HTTPException(401, "Ungültige Anmeldedaten")
+    token = token_erstellen(user.id, user.username)
+    return {"token": token, "user_id": user.id, "username": user.username}
+
+
+# ─── Kategorien ───────────────────────────────────────────────────────────────
 
 @app.get("/categories")
-def get_categories(db: Session = Depends(get_db)):
-    """Gibt alle Kategorien mit ihren Unterkategorien zurück – explizit serialisiert
-    um SQLAlchemy lazy-loading außerhalb der Session zu vermeiden."""
+def get_categories(
+    db: Session = Depends(get_db),
+    _: User = Depends(aktueller_nutzer),
+):
     kategorien = db.query(Category).order_by(Category.position).all()
     return [
         {
@@ -63,223 +142,244 @@ def get_categories(db: Session = Depends(get_db)):
             "position": k.position,
             "subcategories": [
                 {"id": s.id, "name": s.name, "position": s.position}
-                for s in k.subcategories
-            ]
+                for s in sorted(k.subcategories, key=lambda s: s.position)
+            ],
         }
         for k in kategorien
     ]
 
+
 # ─── Produkte ─────────────────────────────────────────────────────────────────
 
-@app.get("/products")
-def get_products(db: Session = Depends(get_db)):
-    return db.query(Product).all()
-
-@app.get("/products/search/{name}")
-def search_product(name: str, db: Session = Depends(get_db)):
-    product = db.query(Product).filter(Product.name.ilike(f"%{name}%")).first()
-    if not product:
-        raise HTTPException(status_code=404, detail="Produkt nicht gefunden")
-    return product
-
 @app.post("/products", response_model=ProductResponse)
-def create_product(product: ProductCreate, db: Session = Depends(get_db)):
-    """
-    3-Stufen-Lookup:
-    1. Original-Name in DB suchen
-    2. Falls nicht gefunden: AI korrigiert + kategorisiert
-    3. Korrigierten Namen nochmal suchen
-    4. Falls immer noch neu: Produkt anlegen
-    """
-    # ── Stufe 1 ───────────────────────────────────────────────────────────────
-    vorhandenes_produkt = db.query(Product).filter(
-        Product.name.ilike(product.name)
-    ).first()
+def create_product(
+    product: ProductCreate,
+    db: Session = Depends(get_db),
+    _: User = Depends(aktueller_nutzer),
+):
+    is_new = False
 
-    war_neu = False
+    # ── Stufe 1: Original-Name in DB suchen ──────────────────────────────────
+    vorhandenes = db.query(Product).filter(Product.name.ilike(product.name)).first()
 
-    if not vorhandenes_produkt:
-        # ── Stufe 2: AI ───────────────────────────────────────────────────────
+    if not vorhandenes:
+        # ── Stufe 2: AI – Rechtschreibkorrektur + Kategorisierung ────────────
         try:
-            ki_ergebnis = korrigiere_und_kategorisiere(product.name)
-            corrected_name      = ki_ergebnis.get("corrected_name", product.name)
-            unterkategorie_name = ki_ergebnis.get("unterkategorie")
+            ki = korrigiere_und_kategorisiere(product.name)
+            corrected_name      = ki.get("corrected_name", product.name)
+            kategorie_name_ai   = ki.get("kategorie")
+            unterkategorie_ai   = ki.get("unterkategorie")
+            print(f"AI für '{product.name}': name='{corrected_name}' kat='{kategorie_name_ai}' sub='{unterkategorie_ai}'")
         except Exception as e:
-            print(f"AI-Fehler: {e}")
-            corrected_name      = product.name
-            unterkategorie_name = None
+            print(f"AI-Fehler für '{product.name}': {e}")
+            corrected_name    = product.name
+            kategorie_name_ai = None
+            unterkategorie_ai = None
 
-        # ── Stufe 3: Korrigierten Namen suchen ────────────────────────────────
-        vorhandenes_produkt = db.query(Product).filter(
-            Product.name.ilike(corrected_name)
-        ).first()
+        # ── Stufe 3: Korrigierten Namen nochmal in DB suchen ─────────────────
+        vorhandenes = db.query(Product).filter(Product.name.ilike(corrected_name)).first()
 
-        if not vorhandenes_produkt:
-            # ── Stufe 4: Neu anlegen ──────────────────────────────────────────
-            war_neu = True
+        if not vorhandenes:
+            # ── Stufe 4: Wirklich neu – Produkt mit Unterkategorie anlegen ───
+            is_new = True
             subcategory_id = None
-            if unterkategorie_name:
-                subcategory = db.query(Subcategory).filter(
-                    Subcategory.name.ilike(unterkategorie_name)
+            if unterkategorie_ai:
+                sub = db.query(Subcategory).filter(
+                    Subcategory.name.ilike(unterkategorie_ai)
                 ).first()
-                if subcategory:
-                    subcategory_id = subcategory.id
-
-            vorhandenes_produkt = Product(
+                if sub:
+                    subcategory_id = sub.id
+            vorhandenes = Product(
                 name=corrected_name,
                 subcategory_id=subcategory_id,
-                ai_verified=True
+                ai_verified=True,
             )
-            db.add(vorhandenes_produkt)
+            db.add(vorhandenes)
             db.commit()
-            db.refresh(vorhandenes_produkt)
+            db.refresh(vorhandenes)
 
-    # ── Kategorie für Response nachladen ──────────────────────────────────────
+    # ── Kategorie und Unterkategorie für Response nachladen ──────────────────
     subcategory_name = None
-    category_name = None
+    category_name    = None
 
-    if vorhandenes_produkt.subcategory_id:
-        subcategory = db.query(Subcategory).filter(
-            Subcategory.id == vorhandenes_produkt.subcategory_id
-        ).first()
-        if subcategory:
-            subcategory_name = subcategory.name
-            category = db.query(Category).filter(
-                Category.id == subcategory.category_id
-            ).first()
-            if category:
-                category_name = category.name
+    if vorhandenes.subcategory_id:
+        sub = db.query(Subcategory).filter(Subcategory.id == vorhandenes.subcategory_id).first()
+        if sub:
+            subcategory_name = sub.name
+            cat = db.query(Category).filter(Category.id == sub.category_id).first()
+            if cat:
+                category_name = cat.name
 
     return ProductResponse(
-        id=vorhandenes_produkt.id,
-        name=vorhandenes_produkt.name,
+        id=vorhandenes.id,
+        name=vorhandenes.name,
         subcategory_name=subcategory_name,
         category_name=category_name,
-        is_new=war_neu
+        is_new=is_new,
     )
+
 
 # ─── Einkaufslisten ───────────────────────────────────────────────────────────
 
-@app.post("/lists")
-def create_list(shopping_list: ShoppingListCreate, db: Session = Depends(get_db)):
-    db_list = ShoppingList(name=shopping_list.name)
-    db.add(db_list)
+def _liste_pruefen(list_id: int, user: User, db: Session) -> ShoppingList:
+    liste = db.query(ShoppingList).filter(
+        ShoppingList.id == list_id, ShoppingList.user_id == user.id
+    ).first()
+    if not liste:
+        raise HTTPException(404, "Liste nicht gefunden oder kein Zugriff")
+    return liste
+
+
+@app.get("/lists")
+def get_lists(
+    db: Session = Depends(get_db),
+    user: User = Depends(aktueller_nutzer),
+):
+    listen = (
+        db.query(ShoppingList)
+        .filter(ShoppingList.user_id == user.id)
+        .order_by(ShoppingList.created_at)
+        .all()
+    )
+    return [{"id": l.id, "name": l.name, "created_at": str(l.created_at)} for l in listen]
+
+
+@app.post("/lists", status_code=201)
+def create_list(
+    data: ShoppingListCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(aktueller_nutzer),
+):
+    neue = ShoppingList(name=data.name, user_id=user.id)
+    db.add(neue)
     db.commit()
-    db.refresh(db_list)
-    return db_list
+    db.refresh(neue)
+    return {"id": neue.id, "name": neue.name, "created_at": str(neue.created_at)}
+
+
+@app.patch("/lists/{list_id}")
+def rename_list(
+    list_id: int,
+    data: ShoppingListRename,
+    db: Session = Depends(get_db),
+    user: User = Depends(aktueller_nutzer),
+):
+    liste = _liste_pruefen(list_id, user, db)
+    liste.name = data.name
+    db.commit()
+    return {"id": liste.id, "name": liste.name}
+
+
+@app.delete("/lists/{list_id}", status_code=204)
+def delete_list(
+    list_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(aktueller_nutzer),
+):
+    liste = _liste_pruefen(list_id, user, db)
+    db.delete(liste)
+    db.commit()
+
+
+# ─── Listen-Items ─────────────────────────────────────────────────────────────
 
 @app.get("/lists/{list_id}/items")
-def get_list_items(list_id: int, db: Session = Depends(get_db)):
-    """
-    Item-eigene subcategory_id hat Vorrang vor Produkt-subcategory_id.
-    """
+def get_items(
+    list_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(aktueller_nutzer),
+):
+    _liste_pruefen(list_id, user, db)
     items = db.query(ShoppingListItem).filter(
         ShoppingListItem.shopping_list_id == list_id
     ).all()
-
     result = []
     for item in items:
-        product = db.query(Product).filter(Product.id == item.product_id).first()
-
-        effective_subcategory_id = item.subcategory_id or (
-            product.subcategory_id if product else None
-        )
-
-        subcategory_name = None
-        category_name = None
-
-        if effective_subcategory_id:
-            subcategory = db.query(Subcategory).filter(
-                Subcategory.id == effective_subcategory_id
-            ).first()
-            if subcategory:
-                subcategory_name = subcategory.name
-                category = db.query(Category).filter(
-                    Category.id == subcategory.category_id
-                ).first()
-                if category:
-                    category_name = category.name
-
+        prod = item.product
+        # Unterkategorie: erst item-spezifisch, dann Produkt-Default
+        if item.subcategory_id:
+            sub = db.query(Subcategory).filter(Subcategory.id == item.subcategory_id).first()
+        else:
+            sub = prod.subcategory if prod else None
+        cat = sub.category if sub else None
         result.append({
-            "id": item.id,
-            "product_id": item.product_id,
-            "subcategory_id": effective_subcategory_id,
-            "name": product.name if product else "Unbekannt",
-            "kategorie": category_name or "Sonstiges",
-            "unterkategorie": subcategory_name,
-            "is_in_cart": item.is_in_cart,
+            "id":             item.id,
+            "product_id":     item.product_id,
+            "name":           prod.name if prod else "",
+            "kategorie":      cat.name  if cat  else "Sonstiges",
+            "unterkategorie": sub.name  if sub  else None,
+            "is_in_cart":     item.is_in_cart,
         })
     return result
 
-@app.post("/lists/{list_id}/items", response_model=ShoppingListItemResponse)
-def add_item_to_list(
+
+@app.post("/lists/{list_id}/items", status_code=201)
+def add_item(
     list_id: int,
     item: ShoppingListItemCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(aktueller_nutzer),
 ):
-    """Kopiert subcategory_id vom Produkt in den Listeneintrag"""
-    product = db.query(Product).filter(Product.id == item.product_id).first()
-
-    db_item = ShoppingListItem(
-        shopping_list_id=list_id,
-        product_id=item.product_id,
-        subcategory_id=product.subcategory_id if product else None,
-        is_in_cart=False
-    )
+    _liste_pruefen(list_id, user, db)
+    db_item = ShoppingListItem(shopping_list_id=list_id, product_id=item.product_id)
     db.add(db_item)
     db.commit()
     db.refresh(db_item)
-    return db_item
+    return {"id": db_item.id}
 
-@app.patch("/lists/{list_id}/items/{item_id}/subcategory")
-def update_item_subcategory(
+
+@app.delete("/lists/{list_id}/items/{item_id}", status_code=204)
+def delete_item(
     list_id: int,
     item_id: int,
-    update: ItemSubcategoryUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(aktueller_nutzer),
 ):
-    """Ändert Kategorie NUR für diesen Listeneintrag – Produkt bleibt unverändert"""
+    _liste_pruefen(list_id, user, db)
     item = db.query(ShoppingListItem).filter(
         ShoppingListItem.id == item_id,
-        ShoppingListItem.shopping_list_id == list_id
+        ShoppingListItem.shopping_list_id == list_id,
     ).first()
     if not item:
-        raise HTTPException(status_code=404, detail="Eintrag nicht gefunden")
-
-    subcategory = db.query(Subcategory).filter(
-        Subcategory.id == update.subcategory_id
-    ).first()
-    if not subcategory:
-        raise HTTPException(status_code=404, detail="Unterkategorie nicht gefunden")
-
-    item.subcategory_id = update.subcategory_id
-    db.commit()
-    db.refresh(item)
-    return {"ok": True}
-
-@app.delete("/lists/{list_id}/items/{item_id}")
-def delete_list_item(list_id: int, item_id: int, db: Session = Depends(get_db)):
-    """Entfernt Eintrag aus Liste – Produkt bleibt in DB"""
-    item = db.query(ShoppingListItem).filter(
-        ShoppingListItem.id == item_id,
-        ShoppingListItem.shopping_list_id == list_id
-    ).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Eintrag nicht gefunden")
+        raise HTTPException(404, "Eintrag nicht gefunden")
     db.delete(item)
     db.commit()
-    return {"ok": True}
+
 
 @app.patch("/lists/{list_id}/items/{item_id}/cart")
-def toggle_cart(list_id: int, item_id: int, db: Session = Depends(get_db)):
-    """Verschiebt Eintrag in den/aus dem Einkaufswagen"""
+def toggle_cart(
+    list_id: int,
+    item_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(aktueller_nutzer),
+):
+    _liste_pruefen(list_id, user, db)
     item = db.query(ShoppingListItem).filter(
         ShoppingListItem.id == item_id,
-        ShoppingListItem.shopping_list_id == list_id
+        ShoppingListItem.shopping_list_id == list_id,
     ).first()
     if not item:
-        raise HTTPException(status_code=404, detail="Eintrag nicht gefunden")
+        raise HTTPException(404, "Eintrag nicht gefunden")
     item.is_in_cart = not item.is_in_cart
     db.commit()
-    db.refresh(item)
-    return item
+    return {"id": item.id, "is_in_cart": item.is_in_cart}
+
+
+@app.patch("/lists/{list_id}/items/{item_id}/subcategory")
+def update_subcategory(
+    list_id: int,
+    item_id: int,
+    data: SubcategoryUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(aktueller_nutzer),
+):
+    _liste_pruefen(list_id, user, db)
+    item = db.query(ShoppingListItem).filter(
+        ShoppingListItem.id == item_id,
+        ShoppingListItem.shopping_list_id == list_id,
+    ).first()
+    if not item:
+        raise HTTPException(404, "Eintrag nicht gefunden")
+    item.subcategory_id = data.subcategory_id
+    db.commit()
+    return {"id": item.id}

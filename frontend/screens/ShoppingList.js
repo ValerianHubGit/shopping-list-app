@@ -5,8 +5,7 @@ import {
 } from 'react-native';
 import { useState, useEffect, useRef, useCallback } from 'react';
 
-const API_BASE = "http://localhost:8000";
-const LIST_ID = 1;
+const API_BASE = "http://192.168.178.77:8000";
 const KATEGORIEREIHENFOLGE = ["Ungekühltes", "Gekühltes", "Tiefgekühltes"];
 const PANEL_BREITE = 240;
 const DRAG_SCHWELLE = 6;
@@ -20,6 +19,13 @@ function ListenMenuPopup({ onSchliessen, onAktion }) {
     <View style={overlayStyle}>
       <View style={listenMenuStyles.box}>
         <Text style={listenMenuStyles.titel}>🗂 Liste verwalten</Text>
+        <TouchableOpacity style={listenMenuStyles.option} onPress={() => onAktion('back')}>
+          <Text style={listenMenuStyles.optionIcon}>←</Text>
+          <View style={listenMenuStyles.optionText}>
+            <Text style={listenMenuStyles.optionTitel}>Zur Listenübersicht</Text>
+            <Text style={listenMenuStyles.optionBeschreibung}>Aktuelle Liste verlassen</Text>
+          </View>
+        </TouchableOpacity>
         <TouchableOpacity style={listenMenuStyles.option} onPress={() => onAktion('reset')}>
           <Text style={listenMenuStyles.optionIcon}>↩️</Text>
           <View style={listenMenuStyles.optionText}>
@@ -74,8 +80,18 @@ function BestatigungsModal({ sichtbar, titel, nachricht, onJa, onNein, onJaLabel
 }
 
 // ─── Hauptkomponente ──────────────────────────────────────────────────────────
-export default function ShoppingList() {
+export default function ShoppingList({ listId, listName, auth, onZurueck, onLogout }) {
   const [artikel, setArtikel] = useState("");
+  // Auth-Header als Ref — stabile Referenz für useCallback mit [] deps
+  const authHeadersRef = useRef({
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${auth.token}`,
+  });
+  // Immer aktuell halten
+  authHeadersRef.current = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${auth.token}`,
+  };
   const [liste, setListe] = useState([]);
   const [laedt, setLaedt] = useState(false);
   const [modal, setModal] = useState(null);
@@ -132,11 +148,21 @@ export default function ShoppingList() {
     (async () => {
       try {
         const [ir, kr] = await Promise.all([
-          fetch(`${API_BASE}/lists/${LIST_ID}/items`),
-          fetch(`${API_BASE}/categories`),
+          fetch(`${API_BASE}/lists/${listId}/items`, { headers: authHeadersRef.current }),
+          fetch(`${API_BASE}/categories`, { headers: authHeadersRef.current }),
         ]);
-        const items = await ir.json();
+        if (ir.status === 401) { onLogout(); return; }
+        const rawItems = await ir.json();
         const kats  = await kr.json();
+        // Explizites Mapping — stellt sicher dass id-Feld vorhanden ist
+        const items = Array.isArray(rawItems) ? rawItems.map(i => ({
+          id: i.id,
+          product_id: i.product_id,
+          name: i.name || '',
+          kategorie: i.kategorie || 'Sonstiges',
+          unterkategorie: i.unterkategorie || null,
+          is_in_cart: i.is_in_cart || false,
+        })) : [];
         setListe(items);
         setAlleKategorien(kats);
       } catch (e) { console.error(e); }
@@ -157,14 +183,30 @@ export default function ShoppingList() {
     r && px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
 
   const findeItemWeb = (px, py) => {
+    if (typeof document === 'undefined') return null;
+    // Primär: BoundingClientRect auf gespeicherten Nodes
     for (const item of listRef.current) {
       const node = itemNodes.current[String(item.id)];
       if (trifft(px, py, rectVon(node))) return item;
+    }
+    // Fallback: data-item-id Attribut via elementsFromPoint
+    const els = document.elementsFromPoint(px, py);
+    for (const el of els) {
+      const id = el.getAttribute?.('data-item-id');
+      if (id) return listRef.current.find(i => String(i.id) === id) ?? null;
     }
     return null;
   };
 
   const ermittleZoneWeb = (px, py) => {
+    if (typeof document === 'undefined') return null;
+    // Ghost hat pointer-events:none → wird von elementsFromPoint übersprungen
+    const els = document.elementsFromPoint(px, py);
+    for (const el of els) {
+      const zone = el.getAttribute?.('data-zone');
+      if (zone) return zone;
+    }
+    // Fallback: BoundingClientRect auf gespeicherten Nodes
     for (const [key, node] of Object.entries(zoneNodes.current)) {
       if (node && trifft(px, py, rectVon(node))) return key;
     }
@@ -460,16 +502,16 @@ export default function ShoppingList() {
   // ─── Aktionen ─────────────────────────────────────────────────────────────
   const itemLoeschen = useCallback(async (item) => {
     try {
-      await fetch(`${API_BASE}/lists/${LIST_ID}/items/${item.id}`, { method: 'DELETE' });
+      await fetch(`${API_BASE}/lists/${listId}/items/${item.id}`, { method: 'DELETE', headers: authHeadersRef.current });
       setListe(v => v.filter(i => i.id !== item.id));
     } catch (e) { console.error(e); }
   }, []);
 
   const unterkategorieAendern = useCallback(async (item, subId) => {
     try {
-      await fetch(`${API_BASE}/lists/${LIST_ID}/items/${item.id}/subcategory`, {
+      await fetch(`${API_BASE}/lists/${listId}/items/${item.id}/subcategory`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeadersRef.current,
         body: JSON.stringify({ subcategory_id: subId }),
       });
       let newKat = 'Sonstiges', newSub = null;
@@ -478,7 +520,7 @@ export default function ShoppingList() {
         if (s) { newKat = k.name; newSub = s.name; break; }
       }
       if (item.is_in_cart) {
-        await fetch(`${API_BASE}/lists/${LIST_ID}/items/${item.id}/cart`, { method: 'PATCH' });
+        await fetch(`${API_BASE}/lists/${listId}/items/${item.id}/cart`, { method: 'PATCH', headers: authHeadersRef.current });
       }
       setListe(v => v.map(i => i.id === item.id
         ? { ...i, kategorie: newKat, unterkategorie: newSub, is_in_cart: false } : i));
@@ -487,7 +529,7 @@ export default function ShoppingList() {
 
   const warenkorbToggle = useCallback(async (itemId) => {
     try {
-      await fetch(`${API_BASE}/lists/${LIST_ID}/items/${itemId}/cart`, { method: 'PATCH' });
+      await fetch(`${API_BASE}/lists/${listId}/items/${itemId}/cart`, { method: 'PATCH', headers: authHeadersRef.current });
       setListe(v => v.map(i => i.id === itemId ? { ...i, is_in_cart: !i.is_in_cart } : i));
     } catch (e) { console.error(e); }
   }, []);
@@ -520,12 +562,12 @@ export default function ShoppingList() {
         // Alle is_in_cart → false
         const imWarenkorb = liste.filter(i => i.is_in_cart);
         await Promise.all(imWarenkorb.map(i =>
-          fetch(`${API_BASE}/lists/${LIST_ID}/items/${i.id}/cart`, { method: 'PATCH' })
+          fetch(`${API_BASE}/lists/${listId}/items/${i.id}/cart`, { method: 'PATCH', headers: authHeadersRef.current })
         ));
         setListe(v => v.map(i => ({ ...i, is_in_cart: false })));
       } else {
         await Promise.all(zuLoeschen.map(i =>
-          fetch(`${API_BASE}/lists/${LIST_ID}/items/${i.id}`, { method: 'DELETE' })
+          fetch(`${API_BASE}/lists/${listId}/items/${i.id}`, { method: 'DELETE', headers: authHeadersRef.current })
         ));
         const geloeschteIds = new Set(zuLoeschen.map(i => i.id));
         setListe(v => v.filter(i => !geloeschteIds.has(i.id)));
@@ -535,6 +577,7 @@ export default function ShoppingList() {
 
   const listenAktionBestaetigen = (aktion) => {
     setListenMenu(false);
+    if (aktion === 'back') { onZurueck(); return; }
     const texte = {
       reset:     { frage: 'Liste zurücksetzen?',         details: 'Alle Artikel im Einkaufswagen werden zurück in die offene Liste verschoben.' },
       clearCart: { frage: 'Einkaufswagen leeren?',       details: 'Alle gekauften Artikel werden dauerhaft gelöscht. Offene Artikel bleiben erhalten.' },
@@ -558,8 +601,8 @@ export default function ShoppingList() {
   // ─── Artikel hinzufügen ───────────────────────────────────────────────────
   const itemZurListeHinzufuegen = async (produkt) => {
     try {
-      const res = await fetch(`${API_BASE}/lists/${LIST_ID}/items`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const res = await fetch(`${API_BASE}/lists/${listId}/items`, {
+        method: 'POST', headers: authHeadersRef.current,
         body: JSON.stringify({ product_id: produkt.id }),
       });
       const neu = await res.json();
@@ -577,7 +620,7 @@ export default function ShoppingList() {
     setLaedt(true);
     try {
       const res  = await fetch(`${API_BASE}/products`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: authHeadersRef.current,
         body: JSON.stringify({ name: artikel.trim() }),
       });
       const prod = await res.json();
@@ -616,7 +659,7 @@ export default function ShoppingList() {
     return g;
   };
 
-  const aktiveItems    = liste.filter(i => !i.is_in_cart);
+  const aktiveItems    = liste.filter(i => !i.is_in_cart && i.name);
   const warenkorbItems = liste.filter(i =>  i.is_in_cart);
   const gruppen        = gruppierteListe(aktiveItems);
   // Stabile Kategorie-Reihenfolge: erst KATEGORIEREIHENFOLGE, dann Rest nach DB-Position
@@ -636,10 +679,18 @@ export default function ShoppingList() {
     <View
       key={item.id}
       ref={node => {
-        if (Platform.OS === 'web') itemNodes.current[String(item.id)] = node;
-        else itemViewRefs.current[item.id] = node;
+        if (Platform.OS === 'web') {
+          if (node) {
+            node.setAttribute?.('data-item-id', String(item.id));
+            itemNodes.current[String(item.id)] = node;
+          } else {
+            delete itemNodes.current[String(item.id)];
+          }
+        } else {
+          itemViewRefs.current[item.id] = node;
+        }
       }}
-      style={[styles.produktZeile, dragItem?.id === item.id && styles.produktZeileDragging]}
+      style={[styles.produktZeile, dragItem !== null && dragItem.id === item.id && styles.produktZeileDragging]}
     >
       {item.is_in_cart
         ? <View style={styles.checkboxAktiv}><Text style={styles.checkboxHaken}>✓</Text></View>
@@ -651,10 +702,17 @@ export default function ShoppingList() {
     </View>
   );
 
-  // ─── Zone-Ref-Setter (Web: DOM node, Native: measureInWindow) ─────────────
+  // ─── Zone-Ref-Setter ──────────────────────────────────────────────────────
+  // Web: setzt data-zone Attribut direkt am DOM-Node UND speichert den Node
+  // Das Attribut bleibt erhalten, auch wenn React den Ref kurz auf null setzt
   const zoneRef = (key) => (node) => {
     if (Platform.OS === 'web') {
-      zoneNodes.current[key] = node;
+      if (node) {
+        node.setAttribute('data-zone', key);
+        zoneNodes.current[key] = node;
+      } else {
+        delete zoneNodes.current[key];
+      }
     } else if (node?.measureInWindow) {
       node.measureInWindow((x, y, w, h) => {
         if (w > 0) zonePosRefs.current[key] = { x, y, w, h };
@@ -717,8 +775,9 @@ export default function ShoppingList() {
         </Animated.View>
       )}
 
-      {/* Panel — pointerEvents auto immer, Ghost blockt mit pointerEvents none */}
+      {/* Panel — immer pointerEvents auto (Ghost hat none, blockiert nicht) */}
       <Animated.View
+        pointerEvents="auto"
         style={[
           styles.kategoriePanel,
           Platform.OS === 'web' && { position: 'fixed' },
@@ -770,13 +829,10 @@ export default function ShoppingList() {
       {/* Hauptinhalt */}
       <Animated.View style={{ flex: 1, paddingRight: contentPaddingRight }}>
         <View style={styles.titelZeile}>
-          <TouchableOpacity
-            style={styles.menuButton}
-            onPress={() => setListenMenu(true)}
-          >
+          <TouchableOpacity style={styles.menuButton} onPress={() => setListenMenu(true)}>
             <Text style={styles.menuButtonText}>☰</Text>
           </TouchableOpacity>
-          <Text style={styles.title}>🛒 Meine Einkaufsliste</Text>
+          <Text style={styles.title} numberOfLines={1}>{listName}</Text>
         </View>
         <View style={styles.eingabeZeile}>
           <TextInput

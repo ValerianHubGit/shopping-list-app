@@ -1,37 +1,83 @@
-from openai import OpenAI
-from dotenv import load_dotenv
 import os
 import json
+import logging
+from openai import OpenAI
+from dotenv import load_dotenv
 
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+logger = logging.getLogger(__name__)
 
-# Alle verfügbaren Kategorien und Unterkategorien
-KATEGORIEN = {
-    "Tiefgekühltes": ["Tiefkühlgemüse", "Tiefkühlpizza & Fertiggerichte", "Tiefkühleis", "Tiefkühlfleisch & Fisch"],
-    "Gekühltes": ["Molkereiprodukte", "Fleisch & Wurst", "Fisch", "Fertiggerichte (gekühlt)", "Getränke (gekühlt)"],
-    "Ungekühltes": ["Obst & Gemüse", "Backwaren & Brot", "Nudeln, Reis & Körner", "Konserven", "Süßwaren & Snacks", "Getränke", "Gewürze & Saucen", "Hygieneartikel", "Haushalt & Reinigung"]
-}
+def korrigiere_und_kategorisiere(name: str) -> dict:
+    """
+    Korrigiert die Rechtschreibung eines Produktnamens und kategorisiert es.
+    Gibt JSON zurück:
+    {
+        "corrected_name": "Milch",
+        "kategorie": "Gekühltes",
+        "unterkategorie": "Molkereiprodukte"
+    }
+    """
+    prompt = f"""Du bist ein erfahrener Supermarktmitarbeiter. Deine Aufgabe:
 
-def kategorisiere_produkt(produktname: str) -> dict:
-    """Fragt OpenAI nach der Kategorie eines Produkts"""
-    
-    prompt = f"""Du bist ein Supermarkt-Kategorisierungssystem.
-Ordne das Produkt "{produktname}" einer Kategorie und Unterkategorie zu.
+1. Korrigiere die Rechtschreibung des Produktnamens:
+   - Behalte den Namen so nah am Original wie möglich.
+   - Korrigiere nur offensichtliche Tippfehler.
+   - Normalisiere Großschreibung (Substantive groß).
 
-Verfügbare Kategorien und Unterkategorien:
-{json.dumps(KATEGORIEN, ensure_ascii=False, indent=2)}
+2. Ordne das Produkt exakt einer dieser Kategorien und Unterkategorien zu:
 
-Antworte NUR mit einem JSON-Objekt in diesem Format:
-{{"kategorie": "Gekühltes", "unterkategorie": "Fleisch & Wurst"}}
+Ungekühltes:
+  - Obst & Gemüse
+  - Backwaren & Brot
+  - Nudeln, Reis & Körner
+  - Konserven
+  - Süßwaren & Snacks
+  - Getränke
+  - Gewürze & Saucen
+  - Hygieneartikel
+  - Haushalt & Reinigung
 
-Wähle die am besten passende Unterkategorie. Wenn nichts passt, nutze "Ungekühltes" und "Sonstiges"."""
+Gekühltes:
+  - Molkereiprodukte
+  - Fleisch & Wurst
+  - Fisch
+  - Fertiggerichte (gekühlt)
+  - Getränke (gekühlt)
+
+Tiefgekühltes:
+  - Tiefkühlgemüse
+  - Tiefkühlpizza & Fertiggerichte
+  - Tiefkühleis
+  - Tiefkühlfleisch & Fisch
+
+Hinweise:
+- Alkohol (Bier, Wein, Vodka, Gin, Rum, Whisky, Sekt etc.) → Ungekühltes › Getränke
+- Säfte, Wasser, Limonaden → Ungekühltes › Getränke
+- Milch, Joghurt, Käse, Butter → Gekühltes › Molkereiprodukte
+- Wähle immer die am besten passende Unterkategorie aus der Liste oben.
+
+Produkt: "{name}"
+
+Antworte mit einem JSON-Objekt mit genau diesen drei Feldern:
+corrected_name, kategorie, unterkategorie"""
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0
+        temperature=0,
+        max_tokens=200,
+        response_format={"type": "json_object"},  # erzwingt valides JSON, kein Markdown
     )
-    
-    antwort = response.choices[0].message.content.strip()
-    return json.loads(antwort)
+
+    raw = response.choices[0].message.content.strip()
+    logger.info(f"AI-Antwort für '{name}': {raw}")
+
+    result = json.loads(raw)
+
+    # Sicherstellen dass alle Felder vorhanden sind
+    return {
+        "corrected_name":   result.get("corrected_name", name),
+        "kategorie":        result.get("kategorie"),
+        "unterkategorie":   result.get("unterkategorie"),
+    }

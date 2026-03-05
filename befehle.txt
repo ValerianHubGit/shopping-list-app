@@ -1,0 +1,17 @@
+python -m venv venv
+venv\Scripts\activate #aktiviert virtuelle Umgebung
+npm run web #führt Frontend aus
+uvicorn main:app --reload --port 8000 führt backend aus
+
+C:\Users\49176\shopping-list-app>cd backend
+C:\Users\49176\shopping-list-app\backend>venv\Scripts\activate
+
+
+für Starts auf Mobile:
+Anpassung IP im ShoppingList.js
+const API_BASE = "http://192.168.178.77:8000";
+
+frontend:
+npx expo start
+backend: 
+uvicorn main:app --reload --port 8000 --host 0.0.0.0
