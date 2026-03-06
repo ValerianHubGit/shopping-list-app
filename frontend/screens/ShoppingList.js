@@ -7,7 +7,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 
 const API_BASE = "http://192.168.178.77:8000";
 const KATEGORIEREIHENFOLGE = ["Ungekühltes", "Gekühltes", "Tiefgekühltes"];
-const PANEL_BREITE = 240;
+const PANEL_BREITE_FALLBACK = 240;
 const DRAG_SCHWELLE = 6;
 
 // ─── Listen-Menü Popup ───────────────────────────────────────────────────────
@@ -96,7 +96,10 @@ export default function ShoppingList({ listId, listName, auth, onZurueck, onLogo
   const [laedt, setLaedt] = useState(false);
   const [modal, setModal] = useState(null);
   const [alleKategorien, setAlleKategorien] = useState([]);
+  const alleKategorienRef = useRef([]);
   const [hoveredKat, setHoveredKat] = useState(null); // ID der aktuell gehoverten Kategorie
+  const [panelBreite, setPanelBreite] = useState(PANEL_BREITE_FALLBACK);
+  const panelBreiteRef = useRef(PANEL_BREITE_FALLBACK); // Sync-Ref für Animationen
   const [dragItem, setDragItem] = useState(null);
   const [activeDropZone, setActiveDropZone] = useState(null);
   const [listenMenu, setListenMenu] = useState(false);     // Popup offen?
@@ -104,7 +107,7 @@ export default function ShoppingList({ listId, listName, auth, onZurueck, onLogo
 
   const dragX = useRef(new Animated.Value(-9999)).current;
   const dragY = useRef(new Animated.Value(-9999)).current;
-  const panelTranslateX = useRef(new Animated.Value(PANEL_BREITE)).current;
+  const panelTranslateX = useRef(new Animated.Value(PANEL_BREITE_FALLBACK)).current;
   const contentPaddingRight = useRef(new Animated.Value(0)).current;
 
   // ─── Refs ──────────────────────────────────────────────────────────────────
@@ -119,12 +122,20 @@ export default function ShoppingList({ listId, listName, auth, onZurueck, onLogo
   const itemNodes     = useRef({}); // id → DOM node
   const zoneNodes     = useRef({}); // key → DOM node
   const ghostNode     = useRef(null);
-  const grabOffsetRef    = useRef({ x: 0, y: 0, rowW: 0, rowH: 0, rowX: 0, rowY: 0 });
+  const grabOffsetRef     = useRef({ x: 0, y: 0, rowW: 0, rowH: 0, rowX: 0, rowY: 0 });
+  const grabNativeOffset  = useRef({ dx: 0, dy: 0 }); // Finger-Offset innerhalb Item (Native)
+  const pressInPos        = useRef({ x: 0, y: 0 });   // pageX/Y bei onPressIn (Native)
   const isPointerDown    = useRef(false); // true nur solange Maustaste gehalten wird
   const dragEndedRef      = useRef(false);  // true direkt nach Drag-Ende → nächsten click unterdrücken
   const scrollViewRef     = useRef(null);   // ScrollView ref für native
   const scrollNodeRef     = useRef(null);   // DOM node für web
   const scrollRAF         = useRef(null);   // requestAnimationFrame handle
+  const panelViewRef      = useRef(null);   // Native: Panel measureInWindow
+  const rootViewRef       = useRef(null);   // Native: Root-View für Koordinaten-Offset
+  const rootOffsetRef     = useRef({ x: 0, y: 0 }); // Offset StatusBar/Container
+  const panelLayoutRef    = useRef(null);   // Native: Panel absolute {x,y,w,h}
+  const panelAbsYRef      = useRef(0);      // Native: Panel absolute Y nach Animation
+  const zoneLayoutsRef    = useRef({});     // Native: Zone onLayout relative {y,h}
   const scrollOffsetRef   = useRef(0);      // aktueller Scroll-Offset
   const scrollLayoutRef   = useRef(null);   // {y, height} der ScrollView (native)
 
@@ -139,9 +150,32 @@ export default function ShoppingList({ listId, listName, auth, onZurueck, onLogo
   const panelEinRef     = useRef(null);
   const dragBeendenRef  = useRef(null);
 
-  useEffect(() => { listRef.current = liste; }, [liste]);
+  useEffect(() => {
+    listRef.current = liste;
+    // Nach Render: Item-Positionen frisch messen (Native)
+    if (Platform.OS !== 'web') {
+      const t = setTimeout(() => zonenMessenRef.current?.(), 150);
+      return () => clearTimeout(t);
+    }
+  }, [liste]);
   useEffect(() => { alleKatRef.current = alleKategorien; }, [alleKategorien]);
   useEffect(() => { modalOffen.current = modal !== null || listenMenu || listenBestaetigung !== null; }, [modal, listenMenu, listenBestaetigung]);
+
+  // Wenn hoveredKat wechselt: alle sub_* Zonen sofort aus zonePosRefs löschen.
+  // Verhindert, dass veraltete Sub-Positionen die Zone-Erkennung verfälschen.
+  useEffect(() => {
+    Object.keys(zonePosRefs.current).forEach(key => {
+      if (key.startsWith('sub_')) delete zonePosRefs.current[key];
+    });
+  }, [hoveredKat]);
+
+  // Wenn panelBreite sich ändert und das Panel gerade geschlossen ist,
+  // panelTranslateX auf neuen Wert setzen damit es korrekt versteckt bleibt.
+  useEffect(() => {
+    if (!isDragging.current) {
+      panelTranslateX.setValue(panelBreite);
+    }
+  }, [panelBreite, panelTranslateX]);
 
   // ─── Initial-Load ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -165,6 +199,7 @@ export default function ShoppingList({ listId, listName, auth, onZurueck, onLogo
         })) : [];
         setListe(items);
         setAlleKategorien(kats);
+    alleKategorienRef.current = kats;
       } catch (e) { console.error(e); }
     })();
   }, []);
@@ -222,24 +257,81 @@ export default function ShoppingList({ listId, listName, auth, onZurueck, onLogo
   };
 
   const ermittleZoneNative = (px, py) => {
-    for (const [k, r] of Object.entries(zonePosRefs.current)) {
-      if (trifft(px, py, r)) return k;
+    const entries = Object.entries(zonePosRefs.current);
+    if (entries.length === 0) {
+      console.log('[DnD] zonePosRefs LEER');
+      return null;
     }
-    return null;
+    console.log('[DnD] Finger:', px.toFixed(0), py.toFixed(0), 'rootOff:', rootOffsetRef.current.x.toFixed(0), rootOffsetRef.current.y.toFixed(0));
+    entries.forEach(([k, r]) => console.log('[DnD] Zone', k, 'x:', r.x?.toFixed(0), 'y:', r.y?.toFixed(0), 'w:', r.w?.toFixed(0), 'h:', r.h?.toFixed(0)));
+    let beste = null, besteH = Infinity;
+    for (const [key, r] of entries) {
+      if (trifft(px, py, r) && r.h < besteH) {
+        beste = key;
+        besteH = r.h;
+      }
+    }
+    return beste;
   };
 
   const findeItem    = Platform.OS === 'web' ? findeItemWeb    : findeItemNative;
   const ermittleZone = Platform.OS === 'web' ? ermittleZoneWeb : ermittleZoneNative;
 
   // Native: Zonen via measureInWindow nach Panel-Animation
+  const zonenMessenRef = useRef(null);
   const zonenMessen = useCallback(() => {
     if (Platform.OS === 'web') return;
+    // Items messen
     Object.entries(itemViewRefs.current).forEach(([id, ref]) => {
       ref?.measureInWindow?.((x, y, w, h) => {
         if (w > 0) itemPosRefs.current[id] = { x, y, w, h };
       });
     });
+    // Veraltete sub_* Zonen aus geschlossenen Kategorien entfernen.
+    // Nur Nodes die aktuell im zoneNodes.current stehen (= sichtbar gemountet)
+    // werden gemessen. Alle anderen sub_* werden gelöscht.
+    Object.keys(zonePosRefs.current).forEach(key => {
+      if (key.startsWith('sub_') && !zoneNodes.current[key]) {
+        delete zonePosRefs.current[key];
+      }
+    });
+    // Alle sichtbaren Zonen direkt messen (Panel muss eingefahren sein)
+    Object.entries(zoneNodes.current).forEach(([key, ref]) => {
+      ref?.measureInWindow?.((x, y, w, h) => {
+        if (h > 0) zonePosRefs.current[key] = { x, y, w, h };
+      });
+    });
+    const zm = Object.entries(zonePosRefs.current).map(([k,r]) => `${k}:y${r.y?.toFixed(0)}-${(r.y+r.h)?.toFixed(0)}`).join(' ');
+    console.log('[DnD] Zonen:', zm);
   }, []);
+  zonenMessenRef.current = zonenMessen;
+
+  // ─── Panel-Breite auto-messen ─────────────────────────────────────────────
+  // Die Messlage (opacity:0, left:-9999) rendert alle Texte unkonstrained.
+  // onPanelTextMessen wird für jeden Text aufgerufen und setzt die Panel-
+  // Breite auf das nötige Minimum (längster Text + Padding + Extras).
+  const maxGemesseneBreite = useRef(0);
+  const onPanelTextMessen = useCallback((e, typ) => {
+    const textBreite = e.nativeEvent.layout.width;
+    let benoetigt;
+    if (typ === 'kat') {
+      // paddingHorizontal:16 + paddingHorizontal:16 + Pfeil(11px) + Gap(8px)
+      benoetigt = textBreite + 32 + 19;
+    } else if (typ === 'sub') {
+      // paddingHorizontal:16 + paddingHorizontal:16
+      benoetigt = textBreite + 32;
+    } else {
+      // trash label: margin:12*2 + padding:14*2
+      benoetigt = textBreite + 52;
+    }
+    if (benoetigt > maxGemesseneBreite.current) {
+      maxGemesseneBreite.current = benoetigt;
+      const neu = Math.ceil(benoetigt) + 2; // 2px Sicherheitspuffer
+      panelBreiteRef.current = neu;
+      setPanelBreite(neu);
+    }
+  }, []);
+
 
   // ─── Panel-Animation ──────────────────────────────────────────────────────
   // Auto-Scroll während Drag
@@ -264,10 +356,13 @@ export default function ShoppingList({ listId, listName, auth, onZurueck, onLogo
         const r = node.getBoundingClientRect();
         const distTop = py - r.top;
         const distBot = r.bottom - py;
-        if (distTop < SCROLL_ZONE) {
-          node.scrollTop -= SCROLL_SPEED * (1 - distTop / SCROLL_ZONE);
-        } else if (distBot < SCROLL_ZONE) {
-          node.scrollTop += SCROLL_SPEED * (1 - distBot / SCROLL_ZONE);
+        const inListArea = px >= r.left && px <= r.right;
+        if (inListArea) {
+          if (distTop < SCROLL_ZONE) {
+            node.scrollTop -= SCROLL_SPEED * (1 - distTop / SCROLL_ZONE);
+          } else if (distBot < SCROLL_ZONE) {
+            node.scrollTop += SCROLL_SPEED * (1 - distBot / SCROLL_ZONE);
+          }
         }
       } else {
         // Native: ScrollView.scrollTo
@@ -283,14 +378,14 @@ export default function ShoppingList({ listId, listName, auth, onZurueck, onLogo
   const panelEin = useCallback(() => {
     Animated.parallel([
       Animated.spring(panelTranslateX,    { toValue: 0,           useNativeDriver: false, tension: 80, friction: 12 }),
-      Animated.spring(contentPaddingRight, { toValue: PANEL_BREITE, useNativeDriver: false, tension: 80, friction: 12 }),
+      Animated.spring(contentPaddingRight, { toValue: panelBreiteRef.current, useNativeDriver: false, tension: 80, friction: 12 }),
     ]).start(({ finished }) => { if (finished) zonenMessen(); });
   }, [zonenMessen]);
   panelEinRef.current = panelEin;
 
   const panelAus = useCallback(() => {
     Animated.parallel([
-      Animated.spring(panelTranslateX,    { toValue: PANEL_BREITE, useNativeDriver: false, tension: 80, friction: 12 }),
+      Animated.spring(panelTranslateX,    { toValue: panelBreiteRef.current, useNativeDriver: false, tension: 80, friction: 12 }),
       Animated.spring(contentPaddingRight, { toValue: 0,            useNativeDriver: false, tension: 80, friction: 12 }),
     ]).start();
   }, []);
@@ -367,8 +462,9 @@ export default function ShoppingList({ listId, listName, auth, onZurueck, onLogo
       }
 
       if (isDragging.current) {
-        dragX.setValue(px - grabOffsetRef.current.x);
-        dragY.setValue(py - grabOffsetRef.current.y);
+        // Ghost auf Fingertip zentriert — Detection ebenfalls bei (px, py)
+        dragX.setValue(px - (grabOffsetRef.current.rowW || 120) / 2);
+        dragY.setValue(py - (grabOffsetRef.current.rowH || 22) / 2);
         autoScrollTick(py);
         const zone = ermittleZoneWeb(px, py);
         setActiveDropZone(zone);
@@ -439,13 +535,20 @@ export default function ShoppingList({ listId, listName, auth, onZurueck, onLogo
 
   // ─── Native PanResponder ──────────────────────────────────────────────────
   const panResponder = useRef(PanResponder.create({
-    onStartShouldSetPanResponder:        () => true,
-    onMoveShouldSetPanResponder:         () => true,
+    // Nicht sofort klauen — erst wenn Drag-Schwelle überschritten wird
+    onStartShouldSetPanResponder:        () => false,
+    onMoveShouldSetPanResponder:         (_, gs) =>
+      isDragging.current ||
+      (!modalOffen.current && (Math.abs(gs.dx) > DRAG_SCHWELLE || Math.abs(gs.dy) > DRAG_SCHWELLE)),
     onStartShouldSetPanResponderCapture: () => isDragging.current,
     onMoveShouldSetPanResponderCapture:  () => isDragging.current,
     onPanResponderGrant: (e) => {
       const { pageX, pageY } = e.nativeEvent;
-      startPos.current = { x: pageX, y: pageY };
+      // Nur überschreiben wenn Drag noch nicht per Long Press gestartet
+      if (!isDragging.current) {
+        startPos.current = { x: pageX, y: pageY };
+        zonenMessenRef.current?.();
+      }
     },
     onPanResponderMove: (e) => {
       const { pageX, pageY } = e.nativeEvent;
@@ -461,38 +564,60 @@ export default function ShoppingList({ listId, listName, auth, onZurueck, onLogo
         }
       }
       if (isDragging.current) {
-        dragX.setValue(pageX - 80);
-        dragY.setValue(pageY - 18);
-        setActiveDropZone(ermittleZoneNative(pageX, pageY));
-        // Native auto-scroll
+        const rx = rootOffsetRef.current.x;
+        const ry = rootOffsetRef.current.y;
+        dragX.setValue(pageX - grabNativeOffset.current.dx - rx);
+        dragY.setValue(pageY - grabNativeOffset.current.dy - ry);
+        const zone = ermittleZoneNative(pageX, pageY);
+        if (Math.round(pageY) % 30 === 0) console.log('[DnD] Finger pageY:', pageY.toFixed(0), 'zone:', zone);
+        setActiveDropZone(zone);
+        // hoveredKat ableiten — analog zu Web-Logik
+        if (zone?.startsWith('kat_')) {
+          const katId = parseInt(zone.replace('kat_', ''));
+          setHoveredKat(prev => {
+            if (prev !== katId) {
+              // Neue Kat → Subs erscheinen → Zonen nach Render neu messen
+              setTimeout(() => zonenMessenRef.current?.(), 150);
+            }
+            return katId;
+          });
+        } else if (zone?.startsWith('sub_')) {
+          const subId = parseInt(zone.replace('sub_', ''));
+          const katObj = alleKategorienRef.current.find(k =>
+            (k.subcategories || []).some(s => s.id === subId)
+          );
+          if (katObj) setHoveredKat(katObj.id ?? null);
+        } else {
+          // Finger außerhalb Panel
+          setHoveredKat(null);
+        }
+        // Native auto-scroll — nur im Listenbereich (nicht im Panel)
         const sv = scrollViewRef.current;
         if (sv?.scrollTo && scrollLayoutRef.current) {
-          const { y: listY, height: listH } = scrollLayoutRef.current;
+          const { x: listX, y: listY, width: listW, height: listH } = scrollLayoutRef.current;
           const relY = pageY - listY;
-          if (relY < SCROLL_ZONE) {
-            scrollOffsetRef.current = Math.max(0, scrollOffsetRef.current - SCROLL_SPEED);
-            sv.scrollTo({ y: scrollOffsetRef.current, animated: false });
-          } else if (relY > listH - SCROLL_ZONE) {
-            scrollOffsetRef.current += SCROLL_SPEED;
-            sv.scrollTo({ y: scrollOffsetRef.current, animated: false });
+          const inListArea = pageX >= listX && pageX <= listX + listW;
+          if (inListArea) {
+            if (relY < SCROLL_ZONE) {
+              scrollOffsetRef.current = Math.max(0, scrollOffsetRef.current - SCROLL_SPEED);
+              sv.scrollTo({ y: scrollOffsetRef.current, animated: false });
+            } else if (relY > listH - SCROLL_ZONE) {
+              scrollOffsetRef.current += SCROLL_SPEED;
+              sv.scrollTo({ y: scrollOffsetRef.current, animated: false });
+            }
           }
         }
       }
     },
     onPanResponderRelease: (e) => {
       const { pageX, pageY } = e.nativeEvent;
-      const dx = Math.abs(pageX - startPos.current.x);
-      const dy = Math.abs(pageY - startPos.current.y);
       const item        = dragItemRef.current;
       const wasDragging = isDragging.current;
       const zone        = wasDragging ? ermittleZoneNative(pageX, pageY) : null;
       dragBeendenRef.current();
-      if (!wasDragging || !item) {
-        if (dx < DRAG_SCHWELLE && dy < DRAG_SCHWELLE) {
-          const tap = findeItemNative(startPos.current.x, startPos.current.y);
-          if (tap) onTapRef.current?.(tap.id);
-        }
-      } else if (zone) {
+      // Taps werden von TouchableOpacity onPress behandelt
+      // Hier nur Drag-Drop auflösen
+      if (wasDragging && item && zone) {
         onDropRef.current?.(item, zone);
       }
     },
@@ -675,49 +800,132 @@ export default function ShoppingList({ listId, listName, auth, onZurueck, onLogo
   ];
 
   // ─── Produktzeile ─────────────────────────────────────────────────────────
-  const renderZeile = (item) => (
-    <View
-      key={item.id}
-      ref={node => {
-        if (Platform.OS === 'web') {
-          if (node) {
-            node.setAttribute?.('data-item-id', String(item.id));
-            itemNodes.current[String(item.id)] = node;
-          } else {
-            delete itemNodes.current[String(item.id)];
-          }
+  const renderZeile = (item) => {
+    const isDragged = dragItem !== null && dragItem.id === item.id;
+    const refSetter = (node) => {
+      if (Platform.OS === 'web') {
+        if (node) {
+          node.setAttribute?.('data-item-id', String(item.id));
+          itemNodes.current[String(item.id)] = node;
         } else {
-          itemViewRefs.current[item.id] = node;
+          delete itemNodes.current[String(item.id)];
         }
-      }}
-      style={[styles.produktZeile, dragItem !== null && dragItem.id === item.id && styles.produktZeileDragging]}
-    >
-      {item.is_in_cart
-        ? <View style={styles.checkboxAktiv}><Text style={styles.checkboxHaken}>✓</Text></View>
-        : <View style={styles.checkbox} />}
-      <Text style={item.is_in_cart ? styles.produktTextErledigt : styles.produktText}>
-        {item.name}
-      </Text>
-      <Text style={styles.dragHandle}>⠿</Text>
-    </View>
-  );
+      } else {
+        itemViewRefs.current[item.id] = node;
+        // Position direkt beim Mount messen
+        if (node) {
+          node.measureInWindow?.((x, y, w, h) => {
+            if (w > 0) itemPosRefs.current[item.id] = { x, y, w, h };
+          });
+        }
+      }
+    };
+
+    // Native: TouchableOpacity für zuverlässige Taps
+    if (Platform.OS !== 'web') {
+      return (
+        <TouchableOpacity
+          key={item.id}
+          ref={refSetter}
+          activeOpacity={0.7}
+          delayLongPress={350}
+          onPress={() => {
+            if (!isDragging.current) onTapRef.current?.(item.id);
+          }}
+          onPressIn={e => {
+            pressInPos.current = {
+              x: e.nativeEvent.pageX,
+              y: e.nativeEvent.pageY,
+            };
+          }}
+          onLongPress={() => {
+            // Long Press startet den Drag
+            // Root-Offset aktuell messen
+            rootViewRef.current?.measureInWindow?.((rx, ry) => {
+              rootOffsetRef.current = { x: rx, y: ry };
+            });
+            zonenMessenRef.current?.();
+            const pos = itemPosRefs.current[item.id];
+            if (pos) {
+              const rx = rootOffsetRef.current.x;
+              const ry = rootOffsetRef.current.y;
+              const px = pressInPos.current.x;
+              const py = pressInPos.current.y;
+              // Grab-Offset: Finger-Position minus Item-Position, beide in Screen-Koordinaten
+              grabNativeOffset.current = {
+                dx: px - pos.x,
+                dy: py - pos.y,
+              };
+              // Ghost startet genau an Item-Position (im Root-View-Koordinatensystem)
+              dragX.setValue(pos.x - rx);
+              dragY.setValue(pos.y - ry);
+              startPos.current = { x: px, y: py };
+            }
+            isDragging.current  = true;
+            dragItemRef.current = item;
+            setDragItem(item);
+            panelEinRef.current?.();
+            // Panel nach Animation einmalig verorten (450ms = spring fertig)
+            setTimeout(() => zonenMessenRef.current?.(), 450);
+          }}
+          style={[styles.produktZeile, isDragged && styles.produktZeileDragging]}
+        >
+          {item.is_in_cart
+            ? <View style={styles.checkboxAktiv}><Text style={styles.checkboxHaken}>✓</Text></View>
+            : <View style={styles.checkbox} />}
+          <Text style={item.is_in_cart ? styles.produktTextErledigt : styles.produktText}>
+            {item.name}
+          </Text>
+          <Text style={styles.dragHandle}>⠿</Text>
+        </TouchableOpacity>
+      );
+    }
+
+    // Web: View mit data-Attributen für pointer-Events
+    return (
+      <View
+        key={item.id}
+        ref={refSetter}
+        style={[styles.produktZeile, isDragged && styles.produktZeileDragging]}
+      >
+        {item.is_in_cart
+          ? <View style={styles.checkboxAktiv}><Text style={styles.checkboxHaken}>✓</Text></View>
+          : <View style={styles.checkbox} />}
+        <Text style={item.is_in_cart ? styles.produktTextErledigt : styles.produktText}>
+          {item.name}
+        </Text>
+        <Text style={styles.dragHandle}>⠿</Text>
+      </View>
+    );
+  };
 
   // ─── Zone-Ref-Setter ──────────────────────────────────────────────────────
-  // Web: setzt data-zone Attribut direkt am DOM-Node UND speichert den Node
-  // Das Attribut bleibt erhalten, auch wenn React den Ref kurz auf null setzt
-  const zoneRef = (key) => (node) => {
-    if (Platform.OS === 'web') {
-      if (node) {
-        node.setAttribute('data-zone', key);
-        zoneNodes.current[key] = node;
-      } else {
-        delete zoneNodes.current[key];
-      }
-    } else if (node?.measureInWindow) {
-      node.measureInWindow((x, y, w, h) => {
-        if (w > 0) zonePosRefs.current[key] = { x, y, w, h };
-      });
+  // WICHTIG: zoneRefCache stellt sicher, dass für denselben key immer
+  // dieselbe Ref-Funktion zurückgegeben wird. Ohne Cache ruft React bei
+  // jedem Re-render die alte Ref mit null auf → löscht zonePosRefs → LEER.
+  const zoneRefCache = useRef({});
+  const zoneRef = (key) => {
+    if (!zoneRefCache.current[key]) {
+      zoneRefCache.current[key] = (node) => {
+        if (Platform.OS === 'web') {
+          if (node) {
+            node.setAttribute('data-zone', key);
+            zoneNodes.current[key] = node;
+          } else {
+            delete zoneNodes.current[key];
+          }
+        } else {
+          if (node) {
+            zoneNodes.current[key] = node;
+          } else {
+            delete zoneNodes.current[key];
+            // zonePosRefs NICHT löschen — stale Position bleibt bis zur
+            // nächsten Messung. Verhindert LEER bei hoveredKat-Wechsel.
+          }
+        }
+      };
     }
+    return zoneRefCache.current[key];
   };
 
   // ─── Render ───────────────────────────────────────────────────────────────
@@ -726,7 +934,17 @@ export default function ShoppingList({ listId, listName, auth, onZurueck, onLogo
     : { ...panResponder.panHandlers, style: styles.container };
 
   return (
-    <View {...rootProps}>
+    <View
+      {...rootProps}
+      ref={node => {
+        if (Platform.OS !== 'web' && node) {
+          rootViewRef.current = node;
+          node.measureInWindow?.((x, y) => {
+            rootOffsetRef.current = { x, y };
+          });
+        }
+      }}
+    >
       {listenMenu && (
         <ListenMenuPopup
           onSchliessen={() => setListenMenu(false)}
@@ -775,13 +993,30 @@ export default function ShoppingList({ listId, listName, auth, onZurueck, onLogo
         </Animated.View>
       )}
 
+      {/* Unsichtbare Messlage — bestimmt auto. Panel-Breite */}
+      <View style={{ position: 'absolute', left: -9999, top: 0, opacity: 0 }} pointerEvents="none">
+        {alleKategorien.map(kat => (
+          <View key={kat.id}>
+            <Text style={styles.panelKatHeaderText}
+              onLayout={e => onPanelTextMessen(e, 'kat')}>{kat.name}</Text>
+            {(kat.subcategories || []).map(sub => (
+              <Text key={sub.id} style={styles.panelSubkatText}
+                onLayout={e => onPanelTextMessen(e, 'sub')}>{sub.name}</Text>
+            ))}
+          </View>
+        ))}
+        <Text style={styles.trashLabel}
+          onLayout={e => onPanelTextMessen(e, 'trash')}>Loslassen zum Löschen</Text>
+      </View>
+
       {/* Panel — immer pointerEvents auto (Ghost hat none, blockiert nicht) */}
       <Animated.View
+        ref={node => { if (Platform.OS !== 'web') panelViewRef.current = node; }}
         pointerEvents="auto"
         style={[
           styles.kategoriePanel,
           Platform.OS === 'web' && { position: 'fixed' },
-          { transform: [{ translateX: panelTranslateX }] },
+          { transform: [{ translateX: panelTranslateX }], width: panelBreite },
         ]}
       >
         <Text style={styles.kategoriePanelTitel}>📂 Kategorien</Text>
@@ -795,6 +1030,7 @@ export default function ShoppingList({ listId, listName, auth, onZurueck, onLogo
                 {/* Oberkategorie — eigene Drop-Zone + Hover-Indikator */}
                 <View
                   ref={zoneRef(katKey)}
+
                   style={[styles.panelKatHeader, katAktiv && styles.panelKatHeaderAktiv]}
                 >
                   <Text style={styles.panelKatHeaderText}>{kat.name}</Text>
@@ -805,7 +1041,10 @@ export default function ShoppingList({ listId, listName, auth, onZurueck, onLogo
                   const key = `sub_${sub.id}`;
                   const aktiv = activeDropZone === key;
                   return (
-                    <View key={sub.id} ref={zoneRef(key)}
+                    <View
+                      key={sub.id}
+                      ref={zoneRef(key)}
+
                       style={[styles.panelSubkat, aktiv && styles.panelSubkatAktiv]}>
                       <Text style={[styles.panelSubkatText, aktiv && styles.panelSubkatTextAktiv]}>
                         {sub.name}
@@ -817,7 +1056,9 @@ export default function ShoppingList({ listId, listName, auth, onZurueck, onLogo
             );
           })}
         </ScrollView>
-        <View ref={zoneRef('trash')}
+        <View
+          ref={zoneRef('trash')}
+
           style={[styles.trashZone, activeDropZone === 'trash' && styles.trashZoneAktiv]}>
           <Text style={styles.trashIcon}>🗑️</Text>
           <Text style={[styles.trashLabel, activeDropZone === 'trash' && styles.trashLabelAktiv]}>
@@ -860,8 +1101,17 @@ export default function ShoppingList({ listId, listName, auth, onZurueck, onLogo
           }}
           style={styles.liste}
           showsVerticalScrollIndicator={false}
-          scrollEnabled={true}
-          onScroll={e => { scrollOffsetRef.current = e.nativeEvent.contentOffset.y; }}
+          scrollEnabled={dragItem === null}
+          onScroll={e => {
+            scrollOffsetRef.current = e.nativeEvent.contentOffset.y;
+            // cart-Zone nach Scroll neu messen (liegt im ScrollView → y ändert sich)
+            if (isDragging.current) {
+              const cartNode = zoneNodes.current['cart'];
+              cartNode?.measureInWindow?.((x, y, w, h) => {
+                if (h > 0) zonePosRefs.current['cart'] = { x, y, w, h };
+              });
+            }
+          }}
           onLayout={e => { scrollLayoutRef.current = e.nativeEvent.layout; }}
           scrollEventThrottle={16}
         >
@@ -934,7 +1184,7 @@ const styles = StyleSheet.create({
   warenkorbHeader:          { fontSize: 17, fontWeight: 'bold', color: '#4CAF50', marginBottom: 8 },
   dragGhost:                { position: 'absolute', zIndex: 1000, backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#f0f0f0', shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 6, elevation: 10, flexDirection: 'row', alignItems: 'center', paddingVertical: 10, paddingHorizontal: 4 },
   dragGhostText:            { fontSize: 15, fontWeight: '600', color: '#333' },
-  kategoriePanel:           { position: 'absolute', right: 0, top: 0, bottom: 0, width: PANEL_BREITE, zIndex: 997, backgroundColor: '#fff', borderLeftWidth: 1, borderLeftColor: '#e0e0e0', paddingTop: 60, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 10, elevation: 8 },
+  kategoriePanel:           { position: 'absolute', right: 0, top: 0, bottom: 0, width: PANEL_BREITE_FALLBACK, zIndex: 997, backgroundColor: '#fff', borderLeftWidth: 1, borderLeftColor: '#e0e0e0', paddingTop: 60, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 10, elevation: 8 },
   kategoriePanelTitel:      { fontSize: 13, fontWeight: 'bold', color: '#555', paddingHorizontal: 16, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 },
   panelKatHeader:           { backgroundColor: '#4CAF50', paddingHorizontal: 16, paddingVertical: 12, marginTop: 6, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   panelKatHeaderAktiv:      { backgroundColor: '#388E3C' },
