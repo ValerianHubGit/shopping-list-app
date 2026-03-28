@@ -97,7 +97,12 @@ class ProductResponse(BaseModel):
     class Config:
         from_attributes = True
 
+# Check Health - Endpunkt
 
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+    
 # ─── Auth-Endpunkte ───────────────────────────────────────────────────────────
 
 @app.post("/auth/register", status_code=201)
