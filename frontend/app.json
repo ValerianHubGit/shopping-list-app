@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "frontend",
+    "name": "Shopping List",
     "slug": "frontend",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -12,18 +12,25 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.valeriankurowski.shoppinglist"
     },
     "android": {
+      "package": "com.valeriankurowski.shoppinglist",
+      "versionCode": 1,
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "backgroundColor": "#4CAF50",
+        "foregroundImage": "./assets/android-icon-foreground.png"
       }
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "ad91e6d8-a894-4cd0-8b8a-bb9576aedc39"
+      }
+    },
+    "owner": "valeriankurowski"
   }
 }
