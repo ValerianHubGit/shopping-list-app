@@ -5,7 +5,8 @@ import {
 } from 'react-native';
 import { useState, useEffect, useRef, useCallback } from 'react';
 
-const API_BASE = "http://192.168.178.77:8000";
+// alt: const API_BASE = "http://192.168.178.77:8000";
+const API_BASE = "https://shopping-list-backend-4wcr.onrender.com";
 const KATEGORIEREIHENFOLGE = ["Ungekühltes", "Gekühltes", "Tiefgekühltes"];
 const PANEL_BREITE_FALLBACK = 240;
 const DRAG_SCHWELLE = 6;

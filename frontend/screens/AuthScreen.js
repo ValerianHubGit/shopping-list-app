@@ -4,7 +4,8 @@ import {
 } from 'react-native';
 import { useState } from 'react';
 
-const API_BASE = 'http://192.168.178.77:8000';
+// alt: const API_BASE = "http://192.168.178.77:8000";
+const API_BASE = "https://shopping-list-backend-4wcr.onrender.com";
 
 export default function AuthScreen({ onLogin }) {
   const [modus, setModus]         = useState('login'); // 'login' | 'register'
