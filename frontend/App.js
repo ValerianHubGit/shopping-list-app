@@ -2,33 +2,33 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-
-import AuthScreen    from './screens/AuthScreen';
-import ListsScreen   from './screens/ListsScreen';
-import ShoppingList  from './screens/ShoppingList';
 import * as Updates from 'expo-updates';
 
-useEffect(() => {
-  async function checkUpdate() {
-    try {
-      const update = await Updates.checkForUpdateAsync();
-      if (update.isAvailable) {
-        await Updates.fetchUpdateAsync();
-        await Updates.reloadAsync();
-      }
-    } catch (_) {}
-  }
-  checkUpdate();
-}, []);
+import AuthScreen   from './screens/AuthScreen';
+import ListsScreen  from './screens/ListsScreen';
+import ShoppingList from './screens/ShoppingList';
 
 const STORAGE_KEY = 'auth_session';
 
 export default function App() {
-  // auth: null | { token, userId, username }
-  const [auth, setAuth]           = useState(null);
-  // aktive Liste: null | { id, name }
-  const [aktiveListe, setAktiveListe] = useState(null);
-  const [laedt, setLaedt]         = useState(true);
+  const [auth, setAuth]                   = useState(null);
+  const [aktiveListe, setAktiveListe]     = useState(null);
+  const [laedt, setLaedt]                 = useState(true);
+
+  // OTA-Update beim Start prüfen
+  useEffect(() => {
+    async function checkUpdate() {
+      if (__DEV__) return;
+      try {
+        const update = await Updates.checkForUpdateAsync();
+        if (update.isAvailable) {
+          await Updates.fetchUpdateAsync();
+          await Updates.reloadAsync();
+        }
+      } catch (_) {}
+    }
+    checkUpdate();
+  }, []);
 
   // Session beim Start laden
   useEffect(() => {

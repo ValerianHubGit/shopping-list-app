@@ -6,6 +6,15 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/ad91e6d8-a894-4cd0-8b8a-bb9576aedc39",
+      "enabled": true,
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 3000
+    },
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -32,13 +41,5 @@
       }
     },
     "owner": "valeriankurowski"
-  },
-  "updates": {
-  "enabled": true,
-  "fallbackToCacheTimeout": 0,
-  "url": "https://u.expo.dev/ad91e6d8-a894-4cd0-8b8a-bb9576aedc39"
-  },
-  "runtimeVersion": {
-  "policy": "appVersion"
-}
+  }
 }
