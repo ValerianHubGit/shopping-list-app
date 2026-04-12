@@ -40,6 +40,7 @@ Ungekühltes:
   - Medikamente
   - Kleidung
   - Schmuck & Uhren
+  - Elektronik
   - Sonstiges Ungekühltes
   
 Gekühltes:
