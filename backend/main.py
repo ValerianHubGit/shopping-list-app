@@ -15,10 +15,16 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8081"],
+    allow_origins=["*"],   # Für Produktion: durch deine Expo-URL ersetzen
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ─── Health-Endpunkt (Keep-Alive für Render Free) ────────────────────────────
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
 
 # ─── Auth-Konfiguration ───────────────────────────────────────────────────────
 SECRET_KEY   = os.getenv("JWT_SECRET", "bitte-in-.env-setzen-sehr-geheim")
@@ -97,12 +103,7 @@ class ProductResponse(BaseModel):
     class Config:
         from_attributes = True
 
-# Check Health - Endpunkt
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-    
 # ─── Auth-Endpunkte ───────────────────────────────────────────────────────────
 
 @app.post("/auth/register", status_code=201)
@@ -164,11 +165,9 @@ def create_product(
 ):
     is_new = False
 
-    # ── Stufe 1: Original-Name in DB suchen ──────────────────────────────────
     vorhandenes = db.query(Product).filter(Product.name.ilike(product.name)).first()
 
     if not vorhandenes:
-        # ── Stufe 2: AI – Rechtschreibkorrektur + Kategorisierung ────────────
         try:
             ki = korrigiere_und_kategorisiere(product.name)
             corrected_name      = ki.get("corrected_name", product.name)
@@ -181,11 +180,9 @@ def create_product(
             kategorie_name_ai = None
             unterkategorie_ai = None
 
-        # ── Stufe 3: Korrigierten Namen nochmal in DB suchen ─────────────────
         vorhandenes = db.query(Product).filter(Product.name.ilike(corrected_name)).first()
 
         if not vorhandenes:
-            # ── Stufe 4: Wirklich neu – Produkt mit Unterkategorie anlegen ───
             is_new = True
             subcategory_id = None
             if unterkategorie_ai:
@@ -203,7 +200,6 @@ def create_product(
             db.commit()
             db.refresh(vorhandenes)
 
-    # ── Kategorie und Unterkategorie für Response nachladen ──────────────────
     subcategory_name = None
     category_name    = None
 
@@ -301,7 +297,6 @@ def get_items(
     result = []
     for item in items:
         prod = item.product
-        # Unterkategorie: erst item-spezifisch, dann Produkt-Default
         if item.subcategory_id:
             sub = db.query(Subcategory).filter(Subcategory.id == item.subcategory_id).first()
         else:
@@ -388,3 +383,17 @@ def update_subcategory(
     item.subcategory_id = data.subcategory_id
     db.commit()
     return {"id": item.id}
+
+@app.patch("/products/{product_id}/subcategory")
+def update_product_subcategory(
+    product_id: int,
+    data: SubcategoryUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(aktueller_nutzer),
+):
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        raise HTTPException(404, "Produkt nicht gefunden")
+    product.subcategory_id = data.subcategory_id
+    db.commit()
+    return {"id": product.id, "subcategory_id": product.subcategory_id}

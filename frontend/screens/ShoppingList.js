@@ -819,18 +819,17 @@ export default function ShoppingList({ listId, listName, auth, onZurueck, onLogo
     const { prod } = kategorieWahl;
     setKategorieWahl(null);
     try {
-      // 1. Item normal zur Liste hinzufügen
-      const res = await fetch(`${API_BASE}/lists/${listId}/items`, {
-        method: 'POST',
-        headers: authHeadersRef.current,
-        body: JSON.stringify({ product_id: prod.id }),
-      });
-      const neuesItem = await res.json();
-      // 2. Subkategorie über bestehenden Endpunkt setzen
-      await fetch(`${API_BASE}/lists/${listId}/items/${neuesItem.id}/subcategory`, {
+      // 1. Produkt-Subkategorie dauerhaft überschreiben (KI-Fund korrigieren)
+      await fetch(`${API_BASE}/products/${prod.id}/subcategory`, {
         method: 'PATCH',
         headers: authHeadersRef.current,
         body: JSON.stringify({ subcategory_id: sub.id }),
+      });
+      // 2. Item zur Liste hinzufügen — nutzt jetzt die manuell gesetzte Subkategorie
+      await fetch(`${API_BASE}/lists/${listId}/items`, {
+        method: 'POST',
+        headers: authHeadersRef.current,
+        body: JSON.stringify({ product_id: prod.id }),
       });
       // 3. Liste neu laden
       const itemsRes = await fetch(`${API_BASE}/lists/${listId}/items`, { headers: authHeadersRef.current });
