@@ -6,6 +6,20 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import AuthScreen    from './screens/AuthScreen';
 import ListsScreen   from './screens/ListsScreen';
 import ShoppingList  from './screens/ShoppingList';
+import * as Updates from 'expo-updates';
+
+useEffect(() => {
+  async function checkUpdate() {
+    try {
+      const update = await Updates.checkForUpdateAsync();
+      if (update.isAvailable) {
+        await Updates.fetchUpdateAsync();
+        await Updates.reloadAsync();
+      }
+    } catch (_) {}
+  }
+  checkUpdate();
+}, []);
 
 const STORAGE_KEY = 'auth_session';
 

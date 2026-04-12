@@ -32,5 +32,13 @@
       }
     },
     "owner": "valeriankurowski"
-  }
+  },
+  "updates": {
+  "enabled": true,
+  "fallbackToCacheTimeout": 0,
+  "url": "https://u.expo.dev/ad91e6d8-a894-4cd0-8b8a-bb9576aedc39"
+  },
+  "runtimeVersion": {
+  "policy": "appVersion"
+}
 }
