@@ -5,8 +5,7 @@ import {
 } from 'react-native';
 import { useState, useEffect, useRef, useCallback } from 'react';
 
-// alt: const API_BASE = "http://192.168.178.77:8000";
-const API_BASE = "https://shopping-list-backend-4wcr.onrender.com";
+const API_BASE = "http://192.168.178.77:8000";
 const KATEGORIEREIHENFOLGE = ["Ungekühltes", "Gekühltes", "Tiefgekühltes"];
 const PANEL_BREITE_FALLBACK = 240;
 const DRAG_SCHWELLE = 6;
@@ -57,7 +56,7 @@ function ListenMenuPopup({ onSchliessen, onAktion }) {
 }
 
 // ─── Modal ────────────────────────────────────────────────────────────────────
-function BestatigungsModal({ sichtbar, titel, nachricht, onJa, onNein, onJaLabel }) {
+function BestatigungsModal({ sichtbar, titel, nachricht, onJa, onNein, onJaLabel, onManuell }) {
   if (!sichtbar) return null;
   const overlayStyle = Platform.OS === 'web'
     ? { ...modalStyles.overlay, position: 'fixed' }
@@ -67,6 +66,11 @@ function BestatigungsModal({ sichtbar, titel, nachricht, onJa, onNein, onJaLabel
       <View style={modalStyles.box}>
         <Text style={modalStyles.titel}>{titel}</Text>
         <Text style={modalStyles.nachricht}>{nachricht}</Text>
+        {onManuell && (
+          <TouchableOpacity style={modalStyles.buttonManuell} onPress={onManuell}>
+            <Text style={modalStyles.buttonManuellText}>🗂 Kategorie manuell wählen</Text>
+          </TouchableOpacity>
+        )}
         <View style={modalStyles.buttons}>
           <TouchableOpacity style={modalStyles.buttonNein} onPress={onNein}>
             <Text style={modalStyles.buttonNeinText}>Abbrechen</Text>
@@ -75,6 +79,39 @@ function BestatigungsModal({ sichtbar, titel, nachricht, onJa, onNein, onJaLabel
             <Text style={modalStyles.buttonJaText}>{onJaLabel ?? 'Ja, hinzufügen'}</Text>
           </TouchableOpacity>
         </View>
+      </View>
+    </View>
+  );
+}
+
+// ─── KategorieWahlModal ───────────────────────────────────────────────────────
+function KategorieWahlModal({ sichtbar, kategorien, onWahl, onAbbrechen }) {
+  if (!sichtbar) return null;
+  const overlayStyle = Platform.OS === 'web'
+    ? { ...modalStyles.overlay, position: 'fixed' }
+    : modalStyles.overlay;
+  return (
+    <View style={overlayStyle}>
+      <View style={[modalStyles.box, { maxHeight: '80%', paddingBottom: 8 }]}>
+        <Text style={modalStyles.titel}>Kategorie wählen</Text>
+        <ScrollView showsVerticalScrollIndicator={true}>
+          {kategorien.map(kat => (
+            <View key={kat.id}>
+              <Text style={katWahlStyles.katHeader}>{kat.name}</Text>
+              {(kat.subcategories || []).map(sub => (
+                <TouchableOpacity
+                  key={sub.id}
+                  style={katWahlStyles.subRow}
+                  onPress={() => onWahl(sub)}>
+                  <Text style={katWahlStyles.subText}>{sub.name}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          ))}
+        </ScrollView>
+        <TouchableOpacity style={[modalStyles.buttonNein, { marginTop: 12, alignSelf: 'flex-end' }]} onPress={onAbbrechen}>
+          <Text style={modalStyles.buttonNeinText}>Abbrechen</Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -96,6 +133,7 @@ export default function ShoppingList({ listId, listName, auth, onZurueck, onLogo
   const [liste, setListe] = useState([]);
   const [laedt, setLaedt] = useState(false);
   const [modal, setModal] = useState(null);
+  const [kategorieWahl, setKategorieWahl] = useState(null); // { prod } | null
   const [alleKategorien, setAlleKategorien] = useState([]);
   const alleKategorienRef = useRef([]);
   const [hoveredKat, setHoveredKat] = useState(null); // ID der aktuell gehoverten Kategorie
@@ -762,14 +800,43 @@ export default function ShoppingList({ listId, listName, auth, onZurueck, onLogo
           ? `${prod.category_name}${prod.subcategory_name ? ' › ' + prod.subcategory_name : ''}`
           : 'Keine Kategorie erkannt';
         setLaedt(false);
-        setModal({ titel: 'Neues Produkt erkannt',
+        setModal({
+          titel: 'Neues Produkt erkannt',
           nachricht: `"${prod.name}" wurde eingestuft als:\n${katText}\n\nZur Liste hinzufügen?`,
-          onJa: () => itemZurListeHinzufuegen(prod) });
+          onJa: () => itemZurListeHinzufuegen(prod),
+          onManuell: () => { setModal(null); setKategorieWahl({ prod }); },
+        });
         setArtikel(''); return;
       }
       await itemZurListeHinzufuegen(prod);
     } catch (e) { console.error(e); }
     finally { setLaedt(false); }
+  };
+
+  // ─── Manuelle Kategorie-Zuweisung ────────────────────────────────────────────
+  const katManuellWaehlen = async (sub) => {
+    if (!kategorieWahl) return;
+    const { prod } = kategorieWahl;
+    setKategorieWahl(null);
+    // Erst Item zur Liste hinzufügen, dann Subkategorie setzen
+    try {
+      const res = await fetch(`${API_BASE}/lists/${listId}/items`, {
+        method: 'POST',
+        headers: authHeadersRef.current,
+        body: JSON.stringify({ product_id: prod.id }),
+      });
+      const neuesItem = await res.json();
+      // Subkategorie direkt setzen
+      await fetch(`${API_BASE}/lists/${listId}/items/${neuesItem.id}/subcategory`, {
+        method: 'PATCH',
+        headers: authHeadersRef.current,
+        body: JSON.stringify({ subcategory_id: sub.id }),
+      });
+      // Liste neu laden
+      const itemsRes = await fetch(`${API_BASE}/lists/${listId}/items`, { headers: authHeadersRef.current });
+      const items = await itemsRes.json();
+      setListe(items);
+    } catch (e) { console.error('Manuelle Kategorie fehlgeschlagen:', e); }
   };
 
   // ─── Gruppieren ───────────────────────────────────────────────────────────
@@ -964,9 +1031,16 @@ export default function ShoppingList({ listId, listName, auth, onZurueck, onLogo
         />
       )}
 
+      <KategorieWahlModal
+        sichtbar={kategorieWahl !== null}
+        kategorien={alleKategorien}
+        onWahl={katManuellWaehlen}
+        onAbbrechen={() => setKategorieWahl(null)}
+      />
       <BestatigungsModal
         sichtbar={modal !== null} titel={modal?.titel}
         nachricht={modal?.nachricht} onJa={modal?.onJa}
+        onManuell={modal?.onManuell}
         onNein={() => { setModal(null); setLaedt(false); }}
       />
 
@@ -1218,13 +1292,21 @@ const listenMenuStyles = StyleSheet.create({
 });
 
 const modalStyles = StyleSheet.create({
-  overlay:        { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', alignItems: 'center', zIndex: 1001 },
-  box:            { backgroundColor: '#fff', borderRadius: 14, padding: 24, width: '85%', maxWidth: 360, shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 12, elevation: 8 },
-  titel:          { fontSize: 17, fontWeight: 'bold', color: '#1a1a1a', marginBottom: 10 },
-  nachricht:      { fontSize: 15, color: '#444', lineHeight: 22, marginBottom: 20 },
-  buttons:        { flexDirection: 'row', gap: 10, justifyContent: 'flex-end' },
-  buttonNein:     { paddingVertical: 10, paddingHorizontal: 16, borderRadius: 8, borderWidth: 1, borderColor: '#ddd' },
-  buttonNeinText: { fontSize: 15, color: '#666' },
-  buttonJa:       { paddingVertical: 10, paddingHorizontal: 16, borderRadius: 8, backgroundColor: '#4CAF50' },
-  buttonJaText:   { fontSize: 15, color: '#fff', fontWeight: '600' },
+  overlay:           { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', alignItems: 'center', zIndex: 1001 },
+  box:               { backgroundColor: '#fff', borderRadius: 14, padding: 24, width: '85%', maxWidth: 360, shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 12, elevation: 8 },
+  titel:             { fontSize: 17, fontWeight: 'bold', color: '#1a1a1a', marginBottom: 10 },
+  nachricht:         { fontSize: 15, color: '#444', lineHeight: 22, marginBottom: 12 },
+  buttonManuell:     { borderWidth: 1, borderColor: '#4CAF50', borderRadius: 8, paddingVertical: 9, paddingHorizontal: 14, marginBottom: 12, alignItems: 'center' },
+  buttonManuellText: { fontSize: 14, color: '#2e7d32', fontWeight: '600' },
+  buttons:           { flexDirection: 'row', gap: 10, justifyContent: 'flex-end' },
+  buttonNein:        { paddingVertical: 10, paddingHorizontal: 16, borderRadius: 8, borderWidth: 1, borderColor: '#ddd' },
+  buttonNeinText:    { fontSize: 15, color: '#666' },
+  buttonJa:          { paddingVertical: 10, paddingHorizontal: 16, borderRadius: 8, backgroundColor: '#4CAF50' },
+  buttonJaText:      { fontSize: 15, color: '#fff', fontWeight: '600' },
+});
+
+const katWahlStyles = StyleSheet.create({
+  katHeader: { fontSize: 13, fontWeight: 'bold', color: '#fff', backgroundColor: '#4CAF50', paddingHorizontal: 12, paddingVertical: 6, marginTop: 8, borderRadius: 6 },
+  subRow:    { paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
+  subText:   { fontSize: 14, color: '#333' },
 });
