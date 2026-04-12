@@ -37,25 +37,31 @@ Ungekühltes:
   - Gewürze & Saucen
   - Hygieneartikel
   - Haushalt & Reinigung
-
+  - Medikamente
+  - Kleidung
+  - Schmuck & Uhren
+  - Sonstiges Ungekühltes
+  
 Gekühltes:
   - Molkereiprodukte
   - Fleisch & Wurst
   - Fisch
   - Fertiggerichte (gekühlt)
   - Getränke (gekühlt)
-
+  - Sonstiges Gekühltes
+  
 Tiefgekühltes:
   - Tiefkühlgemüse
   - Tiefkühlpizza & Fertiggerichte
   - Tiefkühleis
   - Tiefkühlfleisch & Fisch
-
+  - Sonstiges Tiefgekühltes
+  
 Hinweise:
 - Alkohol (Bier, Wein, Vodka, Gin, Rum, Whisky, Sekt etc.) → Ungekühltes › Getränke
 - Säfte, Wasser, Limonaden → Ungekühltes › Getränke
 - Milch, Joghurt, Käse, Butter → Gekühltes › Molkereiprodukte
-- Wähle immer die am besten passende Unterkategorie aus der Liste oben.
+- Wähle immer die am besten passende Unterkategorie aus der Liste oben. Wähle die jeweils zuletzt gelistete Unterkategorie ("Sonstiges ...") nur, wenn keine der anderen Unterkategorien gut passt. 
 
 Produkt: "{name}"
 
@@ -65,7 +71,7 @@ corrected_name, kategorie, unterkategorie"""
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0,
+        temperature=0.2,
         max_tokens=200,
         response_format={"type": "json_object"},  # erzwingt valides JSON, kein Markdown
     )
