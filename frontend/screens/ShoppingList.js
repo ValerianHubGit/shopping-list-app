@@ -5,7 +5,7 @@ import {
 } from 'react-native';
 import { useState, useEffect, useRef, useCallback } from 'react';
 
-const API_BASE = "https://shopping-list-backend-4wcr.onrender.com";
+const API_BASE = "http://192.168.178.77:8000";
 const KATEGORIEREIHENFOLGE = ["Ungekühltes", "Gekühltes", "Tiefgekühltes"];
 const PANEL_BREITE_FALLBACK = 240;
 const DRAG_SCHWELLE = 6;
@@ -818,21 +818,21 @@ export default function ShoppingList({ listId, listName, auth, onZurueck, onLogo
     if (!kategorieWahl) return;
     const { prod } = kategorieWahl;
     setKategorieWahl(null);
-    // Erst Item zur Liste hinzufügen, dann Subkategorie setzen
     try {
+      // 1. Item normal zur Liste hinzufügen
       const res = await fetch(`${API_BASE}/lists/${listId}/items`, {
         method: 'POST',
         headers: authHeadersRef.current,
         body: JSON.stringify({ product_id: prod.id }),
       });
       const neuesItem = await res.json();
-      // Subkategorie direkt setzen
+      // 2. Subkategorie über bestehenden Endpunkt setzen
       await fetch(`${API_BASE}/lists/${listId}/items/${neuesItem.id}/subcategory`, {
         method: 'PATCH',
         headers: authHeadersRef.current,
         body: JSON.stringify({ subcategory_id: sub.id }),
       });
-      // Liste neu laden
+      // 3. Liste neu laden
       const itemsRes = await fetch(`${API_BASE}/lists/${listId}/items`, { headers: authHeadersRef.current });
       const items = await itemsRes.json();
       setListe(items);
